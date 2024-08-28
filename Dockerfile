@@ -1,11 +1,12 @@
 # Build Flutter Builder Container
-FROM google/dart
+FROM arm64v8/ubuntu:24.04
 WORKDIR /app
 
-RUN apt update
-RUN apt upgrade -y
-RUN apt install -y curl git wget unzip libgconf-2-4 gdb libstdc++6 libglu1-mesa fonts-droid-fallback lib32stdc++6 python3 make
-RUN apt clean
+RUN apt-get update
+RUN apt-get upgrade -y
+RUN apt-get install -y git wget unzip make curl
+RUN apt-get clean
+RUN rm -rf /var/lib/apt/lists/*
 
 # Clone the flutter repo
 RUN git clone https://github.com/flutter/flutter.git -b stable --depth 1 /usr/local/flutter
