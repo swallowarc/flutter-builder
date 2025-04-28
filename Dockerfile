@@ -1,5 +1,5 @@
 # Build Flutter Builder Container
-FROM arm64v8/ubuntu:24.04
+FROM ubuntu:24.04
 WORKDIR /app
 
 RUN apt-get update

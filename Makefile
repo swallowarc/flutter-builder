@@ -9,7 +9,11 @@ DOCKER_PASS ?= fake_pass
 
 .PHONY: build push docker-login
 build:
-	docker build -t swallowarc/flutter-builder .
+	docker buildx build \
+      --platform linux/amd64,linux/arm64 \
+      -t swallowarc/flutter-builder:latest \
+      --push \
+      -f Dockerfile .
 
 push: docker-login
 	docker push swallowarc/flutter-builder
