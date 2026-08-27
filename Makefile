@@ -1,7 +1,7 @@
 # basic parameters
-NAME     := swallowarc/flutter-builder
-VERSION  := v0.0.0
-REVISION := $(shell git rev-parse --short HEAD)
+NAME            := swallowarc/flutter-builder
+FLUTTER_VERSION := 3.47.1
+REVISION        := $(shell git rev-parse --short HEAD)
 
 # build parameters
 DOCKER_USER ?= fake_suer
@@ -11,7 +11,9 @@ DOCKER_PASS ?= fake_pass
 build:
 	docker buildx build \
       --platform linux/amd64,linux/arm64 \
-      -t swallowarc/flutter-builder:latest \
+      --build-arg FLUTTER_VERSION=$(FLUTTER_VERSION) \
+      -t $(NAME):latest \
+      -t $(NAME):$(FLUTTER_VERSION) \
       --push \
       -f Dockerfile .
 
