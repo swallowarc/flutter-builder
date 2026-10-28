@@ -1,27 +1,43 @@
 # basic parameters
-NAME          := swallowarc/flutter-builder
-RELEASES_JSON := https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json
+NAME     := ghcr.io/swallowarc/flutter-builder
+REVISION := $(shell git rev-parse --short HEAD)
 
-.PHONY: build setup
+# build parameters
+# "stable" / "beta" is resolved to the current release of that channel;
+# an exact tag such as "3.47.8" is used as is.
+FLUTTER_CHANNEL ?= stable
+FLUTTER_VERSION := $(shell ./scripts/resolve-flutter-version.sh $(FLUTTER_CHANNEL))
+PLATFORMS       ?= linux/amd64,linux/arm64
 
-# QEMU(arm64エミュレータ)の登録。新規ホストで一度だけ実行する
+.PHONY: build build-local version setup
+
+version:
+	@echo $(FLUTTER_VERSION)
+
+# QEMU (cross-arch emulator) registration. Run once on a new host before `make build`.
 setup:
-	docker run --privileged --rm tonistiigi/binfmt --install arm64
+	docker run --privileged --rm tonistiigi/binfmt --install all
 
-# 最新stableのFlutterバージョンを判定し、未publishならマルチアーチビルドしてpushする
+# Multi-arch build pushed to the registry (same tags as the GitHub Actions workflow).
+# Skipped when this version is already published; set FORCE=1 to rebuild.
+# Requires `docker login ghcr.io` beforehand.
 build:
-	@set -e; \
-	docker buildx inspect multiarch >/dev/null 2>&1 || \
-	  docker buildx create --name multiarch --driver docker-container; \
-	VERSION=$$(curl -fsSL $(RELEASES_JSON) | jq -r '.current_release.stable as $$h | .releases[] | select(.hash == $$h) | .version' | head -1); \
-	test -n "$$VERSION"; \
-	echo "Latest stable Flutter: $$VERSION"; \
-	if docker manifest inspect $(NAME):$$VERSION >/dev/null 2>&1; then \
-	  echo "$(NAME):$$VERSION is already published. Nothing to do."; \
+	@if [ -z "$(FORCE)" ] && docker manifest inspect $(NAME):$(FLUTTER_VERSION) >/dev/null 2>&1; then \
+	  echo "$(NAME):$(FLUTTER_VERSION) is already published. Nothing to do (FORCE=1 to rebuild)."; \
 	else \
-	  docker buildx build --builder multiarch \
-	    --platform linux/amd64,linux/arm64 \
-	    --build-arg FLUTTER_VERSION=$$VERSION \
-	    -t $(NAME):latest -t $(NAME):$$VERSION \
-	    --push -f Dockerfile .; \
+	  docker buildx build \
+	    --platform $(PLATFORMS) \
+	    --build-arg FLUTTER_VERSION=$(FLUTTER_VERSION) \
+	    -t $(NAME):$(FLUTTER_VERSION) \
+	    -t $(NAME):latest \
+	    --push \
+	    -f Dockerfile . ; \
 	fi
+
+# Single-arch build loaded into the local docker daemon, for testing.
+build-local:
+	docker buildx build \
+	  --build-arg FLUTTER_VERSION=$(FLUTTER_VERSION) \
+	  -t $(NAME):$(FLUTTER_VERSION) \
+	  --load \
+	  -f Dockerfile .

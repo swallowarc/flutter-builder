@@ -1,0 +1,149 @@
+name: Build and push image
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_version:
+        description: >-
+          Flutter version to build. "stable" / "beta" resolves to the current
+          release of that channel; an exact tag such as "3.47.8" is used as is.
+        required: true
+        default: stable
+      push_latest:
+        description: Also tag the image as "latest"
+        type: boolean
+        default: true
+      force:
+        description: Rebuild even if this version is already published
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  resolve:
+    name: Resolve Flutter version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      image: ${{ steps.resolve.outputs.image }}
+      skip: ${{ steps.published.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve channel to an exact version
+        id: resolve
+        run: |
+          set -euo pipefail
+          version=$(./scripts/resolve-flutter-version.sh '${{ inputs.flutter_version }}')
+          # ghcr image names must be lowercase.
+          image="ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/flutter-builder"
+          echo "Resolved '${{ inputs.flutter_version }}' -> $version ($image)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if this version is already published
+        id: published
+        run: |
+          ref='${{ steps.resolve.outputs.image }}:${{ steps.resolve.outputs.version }}'
+          if [ '${{ inputs.force }}' != 'true' ] && docker manifest inspect "$ref" >/dev/null 2>&1; then
+            echo "$ref is already published. Nothing to do (use 'force' to rebuild)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push each platform image by digest only; the merge job attaches the tags.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: FLUTTER_VERSION=${{ needs.resolve.outputs.version }}
+          outputs: type=image,name=${{ needs.resolve.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Push multi-arch manifest
+    needs: [resolve, build]
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.resolve.outputs.image }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          args=(-t "${IMAGE}:${VERSION}")
+          if [ '${{ inputs.push_latest }}' = 'true' ]; then
+            args+=(-t "${IMAGE}:latest")
+          fi
+          for digest in *; do
+            args+=("${IMAGE}@sha256:${digest}")
+          done
+          docker buildx imagetools create "${args[@]}"
+
+      - name: Inspect
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
